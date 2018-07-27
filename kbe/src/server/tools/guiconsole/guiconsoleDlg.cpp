@@ -73,7 +73,7 @@
 
 namespace KBEngine{
 namespace ConsoleInterface{
-	Network::MessageHandlers messageHandlers;
+	Network::MessageHandlers messageHandlers("ConsoleInterface");
 }
 }
 
@@ -190,7 +190,7 @@ public:
 
 			bhandler.newMessage(MachineInterface::onFindInterfaceAddr);
 			MachineInterface::onFindInterfaceAddrArgs7::staticAddToBundle(bhandler, getUserUID(), getUsername(), 
-				dlg->componentType(), dlg->componentID(), (COMPONENT_TYPE)findComponentType, dlg->networkInterface().intaddr().ip, 
+				dlg->componentType(), dlg->componentID(), (COMPONENT_TYPE)findComponentType, dlg->networkInterface().intTcpAddr().ip,
 				bhandler.epListen().addr().port);
 
 			if(!bhandler.broadcast())
@@ -413,6 +413,7 @@ BOOL CguiconsoleDlg::OnInitDialog()
 	m_ToolBar.ShowWindow(SW_SHOW);
 	RepositionBars(AFX_IDW_CONTROLBAR_FIRST, AFX_IDW_CONTROLBAR_LAST, 0);
 	
+	KBEngine::Network::MessageHandlers::pMainMessageHandlers = &KBEngine::ConsoleInterface::messageHandlers;
 
 	// TODO: Add extra initialization here
 	_dispatcher.breakProcessing(false);
@@ -1333,6 +1334,14 @@ Network::Address CguiconsoleDlg::getTreeItemAddr(HTREEITEM hItem)
 	sport = sbuf.substr(k + 1, sbuf.find("]"));
 	strutil::kbe_replace(sport, "]", "");
 
+	std::map<CString, CString>::iterator mapiter = m_ipMappings.find(CString(sip.c_str()));
+	if (mapiter != m_ipMappings.end())
+	{
+		buf = KBEngine::strutil::wchar2char(mapiter->second.GetBuffer(0));
+		sip = buf;
+		free(buf);
+	}
+
 	Network::EndPoint endpoint;
 	u_int32_t address;
 	Network::Address::string2ip(sip.c_str(), address);
@@ -1580,7 +1589,7 @@ void CguiconsoleDlg::OnNMClickTree1(NMHDR *pNMHDR, LRESULT *pResult)
 	{
 		HTREEITEM hItem = m_tree.GetSelectedItem(); 
 		KBEngine::Network::Address addr = getTreeItemAddr(hItem);
-		m_logWnd.onConnectStatus(changeToChecked, addr);
+		m_logWnd.onConnectionState(changeToChecked, addr);
 	}
 }
 
@@ -1705,7 +1714,7 @@ void CguiconsoleDlg::OnToolBar_StopServer()
 		KBEngine::COMPONENT_ID cid = 0;
 		bhandler << cid;
 		
-		uint32 ip = _networkInterface.intaddr().ip;
+		uint32 ip = _networkInterface.intTcpAddr().ip;
 		uint16 port = bhandler.epListen().addr().port;
 		bhandler << ip << port;
 

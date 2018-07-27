@@ -1,22 +1,4 @@
-/*
-This source file is part of KBEngine
-For the latest info, see http://www.kbengine.org/
-
-Copyright (c) 2008-2016 KBEngine.
-
-KBEngine is free software: you can redistribute it and/or modify
-it under the terms of the GNU Lesser General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-KBEngine is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU Lesser General Public License for more details.
- 
-You should have received a copy of the GNU Lesser General Public License
-along with KBEngine.  If not, see <http://www.gnu.org/licenses/>.
-*/
+// Copyright 2008-2018 Yolo Technologies, Inc. All Rights Reserved. https://www.comblockengine.com
 
 
 #include "threadpool.h"
@@ -420,10 +402,13 @@ void ThreadPool::bufferTask(TPTask* tptask)
 }
 
 //-------------------------------------------------------------------------------------
-TPThread* ThreadPool::createThread(int threadWaitSecond)
+TPThread* ThreadPool::createThread(int threadWaitSecond, bool threadStartsImmediately)
 {
 	TPThread* tptd = new TPThread(this, threadWaitSecond);
-	tptd->createThread();
+
+	if (threadStartsImmediately)
+		tptd->createThread();
+
 	return tptd;
 }	
 
@@ -520,34 +505,41 @@ bool ThreadPool::removeHangThread(TPThread* tptd)
 }
 
 //-------------------------------------------------------------------------------------
+bool ThreadPool::_addTask(TPTask* tptask)
+{
+	std::list<TPThread*>::iterator itr = freeThreadList_.begin();
+	TPThread* tptd = (TPThread*)(*itr);
+	freeThreadList_.erase(itr);
+	busyThreadList_.push_back(tptd);
+	--currentFreeThreadCount_;
+
+	//INFO_MSG("ThreadPool::currFree:%d, currThreadCount:%d, busy:[%d]\n",
+	//		 currentFreeThreadCount_, currentThreadCount_, busyThreadList_count_);
+
+	tptd->task(tptask);
+
+#if KBE_PLATFORM == PLATFORM_WIN32
+	if (tptd->sendCondSignal() == 0) {
+#else
+	if (tptd->sendCondSignal() != 0) {
+#endif
+		ERROR_MSG("ThreadPool::addTask: pthread_cond_signal error!\n");
+		return false;
+	}
+
+	return true;
+}
+
+//-------------------------------------------------------------------------------------
 bool ThreadPool::addTask(TPTask* tptask)
 {
 	THREAD_MUTEX_LOCK(threadStateList_mutex_);
 	if(currentFreeThreadCount_ > 0)
 	{
-		std::list<TPThread*>::iterator itr = freeThreadList_.begin();
-		TPThread* tptd = (TPThread*)(*itr);
-		freeThreadList_.erase(itr);
-		busyThreadList_.push_back(tptd);
-		--currentFreeThreadCount_;
-		
-		//INFO_MSG("ThreadPool::currFree:%d, currThreadCount:%d, busy:[%d]\n",
-		//		 currentFreeThreadCount_, currentThreadCount_, busyThreadList_count_);
-		
-		tptd->task(tptask);	
-		
-#if KBE_PLATFORM == PLATFORM_WIN32
-		if(tptd->sendCondSignal()== 0){
-#else
-		if(tptd->sendCondSignal()!= 0){
-#endif
-			ERROR_MSG("ThreadPool::addTask: pthread_cond_signal error!\n");
-			THREAD_MUTEX_UNLOCK(threadStateList_mutex_);
-			return false;
-		}
-		
+		bool ret = _addTask(tptask);
 		THREAD_MUTEX_UNLOCK(threadStateList_mutex_);
-		return true;
+
+		return ret;
 	}
 	
 	bufferTask(tptask);
@@ -564,8 +556,10 @@ bool ThreadPool::addTask(TPTask* tptask)
 
 	for(uint32 i=0; i<extraNewAddThreadCount_; ++i)
 	{
+		bool threadStartsImmediately = i > 0;
+
 		// 设定5分钟未使用则退出的线程
-		TPThread* tptd = createThread(ThreadPool::timeout);
+		TPThread* tptd = createThread(ThreadPool::timeout, threadStartsImmediately);
 		if(!tptd)
 		{
 #if KBE_PLATFORM == PLATFORM_WIN32		
@@ -579,11 +573,31 @@ bool ThreadPool::addTask(TPTask* tptask)
 		// 所有的线程列表
 		allThreadList_.push_back(tptd);	
 		
-		// 闲置的线程列表
-		freeThreadList_.push_back(tptd);
-		
+		if (threadStartsImmediately)
+		{
+			// 闲置的线程列表
+			freeThreadList_.push_back(tptd);
+			++currentFreeThreadCount_;
+		}
+		else
+		{
+			TPTask * pTask = tptd->tryGetTask();
+			if (pTask)
+			{
+				busyThreadList_.push_back(tptd);
+				tptd->task(pTask);
+			}
+			else
+			{
+				freeThreadList_.push_back(tptd);
+				++currentFreeThreadCount_;
+			}
+
+			tptd->createThread();
+		}
+
 		++currentThreadCount_;
-		++currentFreeThreadCount_;	
+		
 		
 	}
 	
@@ -628,17 +642,6 @@ void* TPThread::threadFunc(void* arg)
 	pthread_detach(pthread_self());
 #endif
 
-	// 在addTask时可能没有可用的线程资源而新创建一些线程，这些线程需要立即进入工作状态
-	if (!tptd->task()) 
-	{
-		TPTask * pTask = tptd->tryGetTask();
-		if (pTask) 
-		{
-			tptd->task(pTask);
-			pThreadPool->addBusyThread(tptd);
-		}
-	}
-
 	tptd->onStart();
 
 	while(isRun)
@@ -679,6 +682,7 @@ void* TPThread::threadFunc(void* arg)
 
 			if(!task1)
 			{
+				tptd->state_ = THREAD_STATE_PENDING;
 				tptd->onTaskCompleted();
 				break;
 			}

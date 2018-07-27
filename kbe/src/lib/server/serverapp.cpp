@@ -1,22 +1,4 @@
-/*
-This source file is part of KBEngine
-For the latest info, see http://www.kbengine.org/
-
-Copyright (c) 2008-2016 KBEngine.
-
-KBEngine is free software: you can redistribute it and/or modify
-it under the terms of the GNU Lesser General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-KBEngine is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU Lesser General Public License for more details.
- 
-You should have received a copy of the GNU Lesser General Public License
-along with KBEngine.  If not, see <http://www.gnu.org/licenses/>.
-*/
+// Copyright 2008-2018 Yolo Technologies, Inc. All Rights Reserved. https://www.comblockengine.com
 
 
 #include "serverapp.h"
@@ -72,7 +54,6 @@ pShutdowner_(NULL),
 pActiveTimerHandle_(NULL),
 threadPool_()
 {
-	networkInterface_.pExtensionData(this);
 	networkInterface_.pChannelTimeOutHandler(this);
 	networkInterface_.pChannelDeregisterHandler(this);
 
@@ -99,8 +80,15 @@ ServerApp::~ServerApp()
 void ServerApp::shutDown(float shutdowntime)
 {
 	if(pShutdowner_ == NULL)
+	{
 		pShutdowner_ = new Shutdowner(this);
-
+	}
+	else
+	{
+		WARNING_MSG(fmt::format("ServerApp::shutDown:  In shuttingdown!\n"));
+		return;
+	}
+	
 	pShutdowner_->shutdown(shutdowntime < 0.f ? g_kbeSrvConfig.shutdowntime() : shutdowntime, 
 		g_kbeSrvConfig.shutdownWaitTickTime(), dispatcher_);
 }
@@ -145,10 +133,10 @@ bool ServerApp::installSignals()
 //-------------------------------------------------------------------------------------		
 bool ServerApp::initialize()
 {
-	if(!initThreadPool())
+	if (!installSignals())
 		return false;
 
-	if(!installSignals())
+	if(!initThreadPool())
 		return false;
 	
 	if(!loadConfig())
@@ -161,6 +149,10 @@ bool ServerApp::initialize()
 		return false;
 
 	bool ret = initializeEnd();
+
+	// 最后仍然需要设置一次，避免期间被其他第三方库修改
+	if (!installSignals())
+		return false;
 
 #ifdef ENABLE_WATCHERS
 	return ret && initializeWatcher();
@@ -188,6 +180,9 @@ bool ServerApp::initializeWatcher()
 //-------------------------------------------------------------------------------------		
 void ServerApp::queryWatcher(Network::Channel* pChannel, MemoryStream& s)
 {
+	if(pChannel->isExternal())
+		return;
+	
 	AUTO_SCOPED_PROFILE("watchers");
 
 	std::string path;
@@ -254,7 +249,7 @@ void ServerApp::handleTimeout(TimerHandle, void * arg)
 //-------------------------------------------------------------------------------------
 void ServerApp::handleTimers()
 {
-	AUTO_SCOPED_PROFILE("callTimers");
+	AUTO_SCOPED_PROFILE("callScriptTimers");
 	timers().process(g_kbetime);
 }
 
@@ -336,12 +331,12 @@ void ServerApp::onRemoveComponent(const Components::ComponentInfos* pInfos)
 	else if (pInfos->componentType == CELLAPPMGR_TYPE)
 	{
 		if (g_componentType == CELLAPP_TYPE)
-			this->shutDown(0.f);
+			this->shutDown(1.f);
 	}
 	else if (pInfos->componentType == BASEAPPMGR_TYPE)
 	{
 		if (g_componentType == BASEAPP_TYPE)
-			this->shutDown(0.f);
+			this->shutDown(1.f);
 	}
 }
 
@@ -427,6 +422,8 @@ void ServerApp::onAppActiveTick(Network::Channel* pChannel, COMPONENT_TYPE compo
 		if(pChannel->isExternal())
 			return;
 	
+	pChannel->updateLastReceivedTime();
+	
 	if(componentType != CONSOLE_TYPE && componentType != CLIENT_TYPE)
 	{
 		Components::ComponentInfos* cinfos = 
@@ -442,10 +439,6 @@ void ServerApp::onAppActiveTick(Network::Channel* pChannel, COMPONENT_TYPE compo
 
 		cinfos->pChannel->updateLastReceivedTime();
 	}
-	else
-	{
-		pChannel->updateLastReceivedTime();
-	}
 
 	//DEBUG_MSG("ServerApp::onAppActiveTick[%x]: %s:%"PRAppID" lastReceivedTime:%"PRIu64" at %s.\n", 
 	//	pChannel, COMPONENT_NAME_EX(componentType), componentID, pChannel->lastReceivedTime(), pTargetChannel->c_str());
@@ -454,6 +447,9 @@ void ServerApp::onAppActiveTick(Network::Channel* pChannel, COMPONENT_TYPE compo
 //-------------------------------------------------------------------------------------
 void ServerApp::reqClose(Network::Channel* pChannel)
 {
+	if(pChannel->isExternal())
+		return;
+	
 	DEBUG_MSG(fmt::format("ServerApp::reqClose: {}\n", pChannel->c_str()));
 	// this->networkInterface().deregisterChannel(pChannel);
 	// pChannel->destroy();
@@ -465,7 +461,7 @@ void ServerApp::lookApp(Network::Channel* pChannel)
 	if(pChannel->isExternal())
 		return;
 
-	DEBUG_MSG(fmt::format("ServerApp::lookApp: {}\n", pChannel->c_str()));
+	//DEBUG_MSG(fmt::format("ServerApp::lookApp: {}, componentID={}\n", pChannel->c_str(), g_componentID));
 
 	Network::Bundle* pBundle = Network::Bundle::createPoolObject();
 	
@@ -477,11 +473,15 @@ void ServerApp::lookApp(Network::Channel* pChannel)
 	(*pBundle) << istate;
 
 	pChannel->send(pBundle);
+	//DEBUG_MSG(fmt::format("ServerApp::lookApp: response! componentID={}\n", g_componentID));
 }
 
 //-------------------------------------------------------------------------------------
 void ServerApp::reqCloseServer(Network::Channel* pChannel, MemoryStream& s)
 {
+	if(pChannel->isExternal())
+		return;
+	
 	DEBUG_MSG(fmt::format("ServerApp::reqCloseServer: {}\n", pChannel->c_str()));
 
 	Network::Bundle* pBundle = Network::Bundle::createPoolObject();
@@ -495,6 +495,8 @@ void ServerApp::reqCloseServer(Network::Channel* pChannel, MemoryStream& s)
 //-------------------------------------------------------------------------------------
 void ServerApp::queryLoad(Network::Channel* pChannel)
 {
+	if(pChannel->isExternal())
+		return;
 }
 
 //-------------------------------------------------------------------------------------
@@ -555,6 +557,9 @@ void ServerApp::onScriptVersionNotMatch(Network::Channel* pChannel)
 //-------------------------------------------------------------------------------------
 void ServerApp::startProfile(Network::Channel* pChannel, KBEngine::MemoryStream& s)
 {
+	if(pChannel->isExternal())
+		return;
+	
 	std::string profileName;
 	int8 profileType;
 	uint32 timelen;
@@ -567,6 +572,9 @@ void ServerApp::startProfile(Network::Channel* pChannel, KBEngine::MemoryStream&
 //-------------------------------------------------------------------------------------
 void ServerApp::startProfile_(Network::Channel* pChannel, std::string profileName, int8 profileType, uint32 timelen)
 {
+	if(pChannel->isExternal())
+		return;
+	
 	switch(profileType)
 	{
 	case 1:	// cprofile

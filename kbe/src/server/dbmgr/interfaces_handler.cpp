@@ -1,22 +1,4 @@
-/*
-This source file is part of KBEngine
-For the latest info, see http://www.kbengine.org/
-
-Copyright (c) 2008-2016 KBEngine.
-
-KBEngine is free software: you can redistribute it and/or modify
-it under the terms of the GNU Lesser General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-KBEngine is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU Lesser General Public License for more details.
- 
-You should have received a copy of the GNU Lesser General Public License
-along with KBEngine.  If not, see <http://www.gnu.org/licenses/>.
-*/
+// Copyright 2008-2018 Yolo Technologies, Inc. All Rights Reserved. https://www.comblockengine.com
 #include "dbmgr.h"
 #include "interfaces_handler.h"
 #include "buffered_dbtasks.h"
@@ -76,7 +58,7 @@ bool InterfacesHandler_Dbmgr::createAccount(Network::Channel* pChannel, std::str
 {
 	std::string dbInterfaceName = Dbmgr::getSingleton().selectAccountDBInterfaceName(registerName);
 
-	thread::ThreadPool* pThreadPool =DBUtil::pThreadPool(dbInterfaceName);
+	thread::ThreadPool* pThreadPool = DBUtil::pThreadPool(dbInterfaceName);
 	if (!pThreadPool)
 	{
 		ERROR_MSG(fmt::format("InterfacesHandler_Dbmgr::createAccount: not found dbInterface({})!\n",
@@ -374,9 +356,9 @@ void InterfacesHandler_Interfaces::onLoginAccountCB(KBEngine::MemoryStream& s)
 	s.readBlob(postdatas);
 	s.readBlob(getdatas);
 
-	bool needCheckPassword = (success == SERVER_ERR_NEED_CHECK_PASSWORD);
+	bool needCheckPassword = (success == SERVER_ERR_LOCAL_PROCESSING);
 
-	if (success != SERVER_SUCCESS && success != SERVER_ERR_NEED_CHECK_PASSWORD)
+	if (success != SERVER_SUCCESS && success != SERVER_ERR_LOCAL_PROCESSING)
 		accountName = "";
 	else
 		success = SERVER_SUCCESS;
@@ -455,13 +437,15 @@ bool InterfacesHandler_Interfaces::reconnect()
 
 	if(pInterfacesChannel->pEndPoint()->connect() == -1)
 	{
-		struct timeval tv = { 0, 1000000 }; // 1000ms
-		fd_set	fds;
-		FD_ZERO(&fds);
-		FD_SET((int)(*pInterfacesChannel->pEndPoint()), &fds);
-
+		struct timeval tv = { 0, 2000000 }; // 1000ms
+		fd_set frds, fwds;
+		FD_ZERO( &frds );
+		FD_ZERO( &fwds );
+		FD_SET((int)(*pInterfacesChannel->pEndPoint()), &frds);
+		FD_SET((int)(*pInterfacesChannel->pEndPoint()), &fwds);
+		
 		bool connected = false;
-		int selgot = select((*pInterfacesChannel->pEndPoint())+1, &fds, &fds, NULL, &tv);
+		int selgot = select((*pInterfacesChannel->pEndPoint())+1, &frds, &fwds, NULL, &tv);
 		if(selgot > 0)
 		{
 			int error;
@@ -477,7 +461,7 @@ bool InterfacesHandler_Interfaces::reconnect()
 
 		if(!connected)
 		{
-			ERROR_MSG(fmt::format("InterfacesHandler_Interfaces::reconnect(): couldn't connect to:{}\n", 
+			ERROR_MSG(fmt::format("InterfacesHandler_Interfaces::reconnect(): couldn't connect to(interfaces server): {}! Check kbengine[_defs].xml->interfaces->host and interfaces.*.log\n", 
 				pInterfacesChannel->pEndPoint()->addr().c_str()));
 
 			pInterfacesChannel->destroy();

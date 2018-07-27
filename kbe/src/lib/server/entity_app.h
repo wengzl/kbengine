@@ -1,22 +1,4 @@
-/*
-This source file is part of KBEngine
-For the latest info, see http://www.kbengine.org/
-
-Copyright (c) 2008-2016 KBEngine.
-
-KBEngine is free software: you can redistribute it and/or modify
-it under the terms of the GNU Lesser General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-KBEngine is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU Lesser General Public License for more details.
- 
-You should have received a copy of the GNU Lesser General Public License
-along with KBEngine.  If not, see <http://www.gnu.org/licenses/>.
-*/
+// Copyright 2008-2018 Yolo Technologies, Inc. All Rights Reserved. https://www.comblockengine.com
 
 #ifndef KBE_ENTITY_APP_H
 #define KBE_ENTITY_APP_H
@@ -43,7 +25,8 @@ along with KBEngine.  If not, see <http://www.gnu.org/licenses/>.
 #include "server/callbackmgr.h"	
 #include "entitydef/entitydef.h"
 #include "entitydef/entities.h"
-#include "entitydef/entity_mailbox.h"
+#include "entitydef/entity_call.h"
+#include "entitydef/entity_component.h"
 #include "entitydef/scriptdef_module.h"
 #include "network/message_handler.h"
 #include "resmgr/resmgr.h"
@@ -92,15 +75,15 @@ public:
 	virtual bool destroyEntity(ENTITY_ID entityID, bool callScript);
 
 	/**
-		由mailbox来尝试获取一个entity的实例
+		由entityCall等来尝试获取一个entity的实例
 		因为这个组件上不一定存在这个entity。
 	*/
-	PyObject* tryGetEntityByMailbox(COMPONENT_ID componentID, ENTITY_ID eid);
+	PyObject* tryGetEntity(COMPONENT_ID componentID, ENTITY_ID eid);
 
 	/**
-		由mailbox来尝试获取一个channel的实例
+		由entityCall来尝试获取一个channel的实例
 	*/
-	Network::Channel* findChannelByMailbox(EntityMailbox& mailbox);
+	Network::Channel* findChannelByEntityCall(EntityCallAbstract& entityCall);
 
 	KBEngine::script::Script& getScript(){ return script_; }
 	PyObjectPtr getEntryScript(){ return entryScript_; }
@@ -171,6 +154,11 @@ public:
 	*/
 	virtual void startProfile_(Network::Channel* pChannel, std::string profileName, int8 profileType, uint32 timelen);
 
+	/**
+		允许脚本assert底层
+	*/
+	static PyObject* __py_assert(PyObject* self, PyObject* args);
+	
 	/**
 		获取apps发布状态, 可在脚本中获取该值
 	*/
@@ -273,12 +261,12 @@ load_(0.f)
 	ScriptTimers::initialize(*this);
 	idClient_.pApp(this);
 
-	// 初始化mailbox模块获取entity实体函数地址
-	EntityMailbox::setGetEntityFunc(std::tr1::bind(&EntityApp<E>::tryGetEntityByMailbox, this, 
+	// 初始化EntityDef模块获取entity实体函数地址
+	EntityDef::setGetEntityFunc(std::tr1::bind(&EntityApp<E>::tryGetEntity, this,
 		std::tr1::placeholders::_1, std::tr1::placeholders::_2));
 
-	// 初始化mailbox模块获取channel函数地址
-	EntityMailbox::setFindChannelFunc(std::tr1::bind(&EntityApp<E>::findChannelByMailbox, this, 
+	// 初始化entityCall模块获取channel函数地址
+	EntityCallAbstract::setFindChannelFunc(std::tr1::bind(&EntityApp<E>::findChannelByEntityCall, this,
 		std::tr1::placeholders::_1));
 }
 
@@ -412,10 +400,14 @@ bool EntityApp<E>::installPyScript()
 	case BASEAPP_TYPE:
 		pyPaths += user_scripts_path + L"server_common;";
 		pyPaths += user_scripts_path + L"base;";
+		pyPaths += user_scripts_path + L"base/interfaces;";
+		pyPaths += user_scripts_path + L"base/components;";
 		break;
 	case CELLAPP_TYPE:
 		pyPaths += user_scripts_path + L"server_common;";
 		pyPaths += user_scripts_path + L"cell;";
+		pyPaths += user_scripts_path + L"cell/interfaces;";
+		pyPaths += user_scripts_path + L"cell/components;";
 		break;
 	case DBMGR_TYPE:
 		pyPaths += user_scripts_path + L"server_common;";
@@ -423,6 +415,8 @@ bool EntityApp<E>::installPyScript()
 		break;
 	default:
 		pyPaths += user_scripts_path + L"client;";
+		pyPaths += user_scripts_path + L"client/interfaces;";
+		pyPaths += user_scripts_path + L"client/components;";
 		break;
 	};
 	
@@ -457,19 +451,6 @@ bool EntityApp<E>::installPyModules()
 	pEntities_ = new Entities<E>();
 	registerPyObjectToScript("entities", pEntities_);
 
-	// 安装入口模块
-	PyObject *entryScriptFileName = NULL;
-	if(componentType() == BASEAPP_TYPE)
-	{
-		ENGINE_COMPONENT_INFO& info = g_kbeSrvConfig.getBaseApp();
-		entryScriptFileName = PyUnicode_FromString(info.entryScriptFile);
-	}
-	else if(componentType() == CELLAPP_TYPE)
-	{
-		ENGINE_COMPONENT_INFO& info = g_kbeSrvConfig.getCellApp();
-		entryScriptFileName = PyUnicode_FromString(info.entryScriptFile);
-	}
-
 	// 添加pywatcher支持
 	if(!initializePyWatcher(&this->getScript()))
 		return false;
@@ -477,8 +458,11 @@ bool EntityApp<E>::installPyModules()
 	// 添加globalData, globalBases支持
 	pGlobalData_ = new GlobalDataClient(DBMGR_TYPE, GlobalDataServer::GLOBAL_DATA);
 	registerPyObjectToScript("globalData", pGlobalData_);
-
+	
 	// 注册创建entity的方法到py
+	// 允许assert底层，用于调试脚本某个时机时底层状态
+	APPEND_SCRIPT_MODULE_METHOD(getScript().getModule(),	kbassert,			__py_assert,							METH_VARARGS,	0);
+	
 	// 向脚本注册app发布状态
 	APPEND_SCRIPT_MODULE_METHOD(getScript().getModule(),	publish,			__py_getAppPublish,						METH_VARARGS,	0);
 
@@ -547,11 +531,34 @@ bool EntityApp<E>::installPyModules()
 		}
 	}
 	
-	if(entryScriptFileName != NULL)
+	// 安装入口模块
+	std::string entryScriptFileName = "";
+	if (componentType() == BASEAPP_TYPE)
 	{
-		entryScript_ = PyImport_Import(entryScriptFileName);
-		SCRIPT_ERROR_CHECK();
-		S_RELEASE(entryScriptFileName);
+		ENGINE_COMPONENT_INFO& info = g_kbeSrvConfig.getBaseApp();
+		entryScriptFileName = info.entryScriptFile;
+	}
+	else if (componentType() == CELLAPP_TYPE)
+	{
+		ENGINE_COMPONENT_INFO& info = g_kbeSrvConfig.getCellApp();
+		entryScriptFileName = info.entryScriptFile;
+	}
+
+	if(entryScriptFileName.size() > 0)
+	{
+		PyObject *pyEntryScriptFileName = PyUnicode_FromString(entryScriptFileName.c_str());
+		entryScript_ = PyImport_Import(pyEntryScriptFileName);
+
+		if (PyErr_Occurred())
+		{
+			INFO_MSG(fmt::format("EntityApp::installPyModules: importing scripts/{}{}.py...\n", 
+				(componentType() == BASEAPP_TYPE ? "base/" : "cell/"), 
+				entryScriptFileName));
+
+			PyErr_PrintEx(0);
+		}
+
+		S_RELEASE(pyEntryScriptFileName);
 
 		if(entryScript_.get() == NULL)
 		{
@@ -598,13 +605,19 @@ E* EntityApp<E>::createEntity(const char* entityType, PyObject* params,
 	ScriptDefModule* sm = EntityDef::findScriptModule(entityType);
 	if(sm == NULL)
 	{
-		PyErr_Format(PyExc_TypeError, "EntityApp::createEntity: entity [%s] not found.\n", entityType);
+		PyErr_Format(PyExc_TypeError, "EntityApp::createEntity: entityType [%s] not found! Please register in entities.xml and implement a %s.def and %s.py\n", 
+			entityType, entityType, entityType);
+		
 		PyErr_PrintEx(0);
 		return NULL;
 	}
 	else if(componentType_ == CELLAPP_TYPE ? !sm->hasCell() : !sm->hasBase())
 	{
-		PyErr_Format(PyExc_TypeError, "EntityApp::createEntity: entity [%s] not found.\n", entityType);
+		PyErr_Format(PyExc_TypeError, "EntityApp::createEntity: cannot create %s(%s=false)! Please check the setting of the entities.xml and the implementation of %s.py\n", 
+			entityType, 
+			(componentType_ == CELLAPP_TYPE ? "hasCell()" : "hasBase()"), 
+			entityType);
+		
 		PyErr_PrintEx(0);
 		return NULL;
 	}
@@ -616,6 +629,8 @@ E* EntityApp<E>::createEntity(const char* entityType, PyObject* params,
 	if(id <= 0)
 		id = idClient_.alloc();
 	
+	EntityDef::context().currEntityID = id;
+
 	E* entity = onCreateEntity(obj, sm, id);
 
 	if(initProperty)
@@ -671,14 +686,14 @@ void EntityApp<E>::onSignalled(int sigNum)
 }
 
 template<class E>
-PyObject* EntityApp<E>::tryGetEntityByMailbox(COMPONENT_ID componentID, ENTITY_ID eid)
+PyObject* EntityApp<E>::tryGetEntity(COMPONENT_ID componentID, ENTITY_ID eid)
 {
 	if(componentID != componentID_)
 		return NULL;
 	
 	E* entity = pEntities_->find(eid);
 	if(entity == NULL){
-		ERROR_MSG(fmt::format("EntityApp::tryGetEntityByMailbox: can't found entity:{}.\n", eid));
+		ERROR_MSG(fmt::format("EntityApp::tryGetEntity: can't found entity:{}.\n", eid));
 		return NULL;
 	}
 
@@ -686,20 +701,20 @@ PyObject* EntityApp<E>::tryGetEntityByMailbox(COMPONENT_ID componentID, ENTITY_I
 }
 
 template<class E>
-Network::Channel* EntityApp<E>::findChannelByMailbox(EntityMailbox& mailbox)
+Network::Channel* EntityApp<E>::findChannelByEntityCall(EntityCallAbstract& entityCall)
 {
 	// 如果组件ID大于0则查找组件
-	if(mailbox.componentID() > 0)
+	if(entityCall.componentID() > 0)
 	{
 		Components::ComponentInfos* cinfos = 
-			Components::getSingleton().findComponent(mailbox.componentID());
+			Components::getSingleton().findComponent(entityCall.componentID());
 
 		if(cinfos != NULL && cinfos->pChannel != NULL)
 			return cinfos->pChannel; 
 	}
 	else
 	{
-		return Components::getSingleton().pNetworkInterface()->findChannel(mailbox.addr());
+		return Components::getSingleton().pNetworkInterface()->findChannel(entityCall.addr());
 	}
 
 	return NULL;
@@ -731,7 +746,6 @@ void EntityApp<E>::handleGameTick()
 	handleTimers();
 	
 	{
-		AUTO_SCOPED_PROFILE("processRecvMessages");
 		networkInterface().processChannels(KBEngine::Network::MessageHandlers::pMainMessageHandlers);
 	}
 }
@@ -760,8 +774,18 @@ E* EntityApp<E>::findEntity(ENTITY_ID entityID)
 template<class E>
 void EntityApp<E>::onReqAllocEntityID(Network::Channel* pChannel, ENTITY_ID startID, ENTITY_ID endID)
 {
+	if(pChannel->isExternal())
+		return;
+	
 	// INFO_MSG("EntityApp::onReqAllocEntityID: entityID alloc(%d-%d).\n", startID, endID);
 	idClient_.onAddRange(startID, endID);
+}
+
+template<class E>
+PyObject* EntityApp<E>::__py_assert(PyObject* self, PyObject* args)
+{
+	KBE_ASSERT(false && "kbassert");
+	return NULL;
 }
 
 template<class E>
@@ -1215,6 +1239,9 @@ PyObject* EntityApp<E>::__py_listPathRes(PyObject* self, PyObject* args)
 template<class E>
 void EntityApp<E>::startProfile_(Network::Channel* pChannel, std::string profileName, int8 profileType, uint32 timelen)
 {
+	if(pChannel->isExternal())
+		return;
+	
 	switch(profileType)
 	{
 	case 0:	// pyprofile
@@ -1233,6 +1260,9 @@ void EntityApp<E>::onDbmgrInitCompleted(Network::Channel* pChannel,
 						COMPONENT_ORDER startGlobalOrder, COMPONENT_ORDER startGroupOrder, 
 						const std::string& digest)
 {
+	if(pChannel->isExternal())
+		return;
+	
 	INFO_MSG(fmt::format("EntityApp::onDbmgrInitCompleted: entityID alloc({}-{}), startGlobalOrder={}, startGroupOrder={}, digest={}.\n",
 		startID, endID, startGlobalOrder, startGroupOrder, digest));
 
@@ -1258,6 +1288,9 @@ void EntityApp<E>::onDbmgrInitCompleted(Network::Channel* pChannel,
 template<class E>
 void EntityApp<E>::onBroadcastGlobalDataChanged(Network::Channel* pChannel, KBEngine::MemoryStream& s)
 {
+	if(pChannel->isExternal())
+		return;
+	
 	std::string key, value;
 	bool isDelete;
 	
@@ -1283,7 +1316,7 @@ void EntityApp<E>::onBroadcastGlobalDataChanged(Network::Channel* pChannel, KBEn
 			// 通知脚本
 			// SCOPED_PROFILE(SCRIPTCALL_PROFILE);
 			SCRIPT_OBJECT_CALL_ARGS1(getEntryScript().get(), const_cast<char*>("onGlobalDataDel"), 
-				const_cast<char*>("O"), pyKey);
+				const_cast<char*>("O"), pyKey, false);
 		}
 	}
 	else
@@ -1301,7 +1334,7 @@ void EntityApp<E>::onBroadcastGlobalDataChanged(Network::Channel* pChannel, KBEn
 			// 通知脚本
 			// SCOPED_PROFILE(SCRIPTCALL_PROFILE);
 			SCRIPT_OBJECT_CALL_ARGS2(getEntryScript().get(), const_cast<char*>("onGlobalData"), 
-				const_cast<char*>("OO"), pyKey, pyValue);
+				const_cast<char*>("OO"), pyKey, pyValue, false);
 		}
 
 		Py_DECREF(pyValue);
@@ -1313,6 +1346,9 @@ void EntityApp<E>::onBroadcastGlobalDataChanged(Network::Channel* pChannel, KBEn
 template<class E>
 void EntityApp<E>::onExecScriptCommand(Network::Channel* pChannel, KBEngine::MemoryStream& s)
 {
+	if(pChannel->isExternal())
+		return;
+	
 	std::string cmd;
 	s.readBlob(cmd);
 
@@ -1386,7 +1422,7 @@ void EntityApp<E>::updateLoad()
 	double spareTime = 1.0;
 	if (lastTickInStamps != 0)
 	{
-		spareTime = double(dispatcher_.getSpareTime())/double(lastTickInStamps);
+		spareTime = double(dispatcher_.getSpareTime()) / double(lastTickInStamps);
 	}
 
 	dispatcher_.clearSpareTime();
@@ -1427,10 +1463,16 @@ void EntityApp<E>::calcLoad(float spareTime)
 template<class E>
 void EntityApp<E>::onReloadScript(bool fullReload)
 {
-	EntityMailbox::MAILBOXS::iterator iter =  EntityMailbox::mailboxs.begin();
-	for(; iter != EntityMailbox::mailboxs.end(); ++iter)
+	EntityCall::ENTITYCALLS::iterator iter = EntityCall::entityCalls.begin();
+	for(; iter != EntityCall::entityCalls.end(); ++iter)
 	{
 		(*iter)->reload();
+	}
+
+	EntityComponent::ENTITY_COMPONENTS::iterator iter1 = EntityComponent::entity_components.begin();
+	for (; iter1 != EntityComponent::entity_components.end(); ++iter1)
+	{
+		(*iter1)->reload();
 	}
 }
 

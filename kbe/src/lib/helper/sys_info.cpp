@@ -1,22 +1,4 @@
-/*
-This source file is part of KBEngine
-For the latest info, see http://www.kbengine.org/
-
-Copyright (c) 2008-2016 KBEngine.
-
-KBEngine is free software: you can redistribute it and/or modify
-it under the terms of the GNU Lesser General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-KBEngine is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU Lesser General Public License for more details.
- 
-You should have received a copy of the GNU Lesser General Public License
-along with KBEngine.  If not, see <http://www.gnu.org/licenses/>.
-*/
+// Copyright 2008-2018 Yolo Technologies, Inc. All Rights Reserved. https://www.comblockengine.com
 
 #include "sys_info.h"
 
@@ -66,9 +48,11 @@ bool hasPID(int pid, sigar_proc_list_t* proclist)
 SystemInfo::SystemInfo()
 {
 	totalmem_ = 0;
-	_autocreate();
-	// getCPUPer();
-	// getProcessInfo();
+
+	// 不要在初始化中做这件事情，因为全局静态变量这里可能在main之前被调用一次
+	//_autocreate();
+	//getCPUPer();
+	//getProcessInfo();
 }
 
 //-------------------------------------------------------------------------------------
@@ -104,7 +88,7 @@ bool SystemInfo::_autocreate()
 		int status = sigar_proc_list_get(_g_sigarproclist, &_g_proclist);
 		if (status != SIGAR_OK) 
 		{
-			DEBUG_MSG(fmt::format("SystemInfo::autocreate:error: {} ({}) sigar_proc_list_get\n",
+			DEBUG_MSG(fmt::format("SystemInfo::autocreate: error: {} ({}) sigar_proc_list_get\n",
 					   status, sigar_strerror(_g_sigarproclist, status)));
 
 			sigar_close(_g_sigarproclist);
@@ -257,7 +241,7 @@ float SystemInfo::getCPUPerByPID(uint32 pid)
 _TRYGET:
 	if(!hasPID(pid, &_g_proclist))
 	{
-		DEBUG_MSG(fmt::format("SystemInfo::getCPUPerByPID: error: not found pid({})\n", pid));
+		//DEBUG_MSG(fmt::format("SystemInfo::getCPUPerByPID: error: not found pid({})\n", pid));
 
 		if(!tryed)
 		{
@@ -368,7 +352,7 @@ uint64 SystemInfo::getMemUsedByPID(uint32 pid)
 _TRYGET:
 	if(!hasPID(pid, &_g_proclist))
 	{
-		DEBUG_MSG(fmt::format("SystemInfo::getMemUsedByPID: error: not found pid({})\n", pid));
+		//DEBUG_MSG(fmt::format("SystemInfo::getMemUsedByPID: error: not found pid({})\n", pid));
 
 		if(!tryed)
 		{

@@ -1,22 +1,4 @@
-/*
-This source file is part of KBEngine
-For the latest info, see http://www.kbengine.org/
-
-Copyright (c) 2008-2016 KBEngine.
-
-KBEngine is free software: you can redistribute it and/or modify
-it under the terms of the GNU Lesser General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-KBEngine is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU Lesser General Public License for more details.
- 
-You should have received a copy of the GNU Lesser General Public License
-along with KBEngine.  If not, see <http://www.gnu.org/licenses/>.
-*/
+// Copyright 2008-2018 Yolo Technologies, Inc. All Rights Reserved. https://www.comblockengine.com
 
 
 #include "endpoint.h"
@@ -114,6 +96,8 @@ void EndPoint::onReclaimObject()
 #endif
 
 	address_ = Address::NONE;
+
+	isRefSocket_ = false;
 }
 
 //-------------------------------------------------------------------------------------
@@ -273,26 +257,26 @@ int EndPoint::findIndicatedInterface(const char * spec, u_int32_t & address)
 {
 	address = 0;
 
-	if(spec == NULL || spec[0] == 0) 
+	if (spec == NULL || spec[0] == 0)
 	{
 		return -1;
 	}
 
 	// 是否指定地址
-	if(0 != Address::string2ip(spec, address))
+	if (0 == Address::string2ip(spec, address))
 	{
-		return -1;
+		return 0;
 	}
-	else if(0 != this->getInterfaceAddressByMAC(spec, address))
+	else if (0 == this->getInterfaceAddressByMAC(spec, address))
 	{
-		return -1;
+		return 0;
 	}
-	else if(0 != this->getInterfaceAddressByName(spec, address))
+	else if (0 == this->getInterfaceAddressByName(spec, address))
 	{
-		return -1;
+		return 0;
 	}
 
-	return 0;
+	return -1;
 }
 
 //-------------------------------------------------------------------------------------

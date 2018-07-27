@@ -1,22 +1,4 @@
-/*
-This source file is part of KBEngine
-For the latest info, see http://www.kbengine.org/
-
-Copyright (c) 2008-2016 KBEngine.
-
-KBEngine is free software: you can redistribute it and/or modify
-it under the terms of the GNU Lesser General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-KBEngine is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU Lesser General Public License for more details.
- 
-You should have received a copy of the GNU Lesser General Public License
-along with KBEngine.  If not, see <http://www.gnu.org/licenses/>.
-*/
+// Copyright 2008-2018 Yolo Technologies, Inc. All Rights Reserved. https://www.comblockengine.com
 
 
 #include "clientapp.h"
@@ -29,7 +11,8 @@ along with KBEngine.  If not, see <http://www.gnu.org/licenses/>.
 #include "network/tcp_packet_sender.h"
 #include "network/tcp_packet_receiver.h"
 #include "thread/threadpool.h"
-#include "entitydef/entity_mailbox.h"
+#include "entitydef/entity_call.h"
+#include "entitydef/entity_component.h"
 #include "entitydef/entitydef.h"
 #include "server/components.h"
 #include "server/serverconfig.h"
@@ -71,12 +54,11 @@ threadPool_(),
 entryScript_(),
 state_(C_STATE_INIT)
 {
-	networkInterface_.pExtensionData(this);
 	networkInterface_.pChannelTimeOutHandler(this);
 	networkInterface_.pChannelDeregisterHandler(this);
 
-	// 初始化mailbox模块获取channel函数地址
-	EntityMailbox::setFindChannelFunc(std::tr1::bind(&ClientApp::findChannelByMailbox, this, 
+	// 初始化entityCall模块获取channel函数地址
+	EntityCallAbstract::setFindChannelFunc(std::tr1::bind(&ClientApp::findChannelByEntityCall, this,
 		std::tr1::placeholders::_1));
 
 	KBEngine::Network::MessageHandlers::pMainMessageHandlers = &ClientInterface::messageHandlers;
@@ -87,7 +69,7 @@ state_(C_STATE_INIT)
 //-------------------------------------------------------------------------------------
 ClientApp::~ClientApp()
 {
-	EntityMailbox::resetCallHooks();
+	EntityCallAbstract::resetCallHooks();
 	SAFE_RELEASE(pBlowfishFilter_);
 }
 
@@ -215,7 +197,8 @@ bool ClientApp::installEntityDef()
 	APPEND_SCRIPT_MODULE_METHOD(getScript().getModule(),	getWatcher,			__py_getWatcher,								METH_VARARGS,	0)
 	APPEND_SCRIPT_MODULE_METHOD(getScript().getModule(),	getWatcherDir,		__py_getWatcherDir,								METH_VARARGS,	0)
 	APPEND_SCRIPT_MODULE_METHOD(getScript().getModule(),	disconnect,			__py_disconnect,								METH_VARARGS,	0)
-	
+	APPEND_SCRIPT_MODULE_METHOD(getScript().getModule(),	kbassert,			__py_assert,									METH_VARARGS,	0)
+
 	// 获得资源全路径
 	APPEND_SCRIPT_MODULE_METHOD(getScript().getModule(),	getResFullPath,		__py_getResFullPath,							METH_VARARGS,	0)
 
@@ -250,6 +233,7 @@ bool ClientApp::uninstallPyScript()
 bool ClientApp::installPyModules()
 {
 	registerScript(client::Entity::getScriptType());
+	registerScript(EntityComponent::getScriptType());
 	onInstallPyModules();
 
 	// 注册设置脚本输出类型
@@ -286,7 +270,15 @@ bool ClientApp::installPyModules()
 	if(entryScriptFileName != NULL)
 	{
 		entryScript_ = PyImport_Import(entryScriptFileName);
-		SCRIPT_ERROR_CHECK();
+
+		if (PyErr_Occurred())
+		{
+			INFO_MSG(fmt::format("EntityApp::installPyModules: importing scripts/client/{}.py...\n",
+				g_kbeConfig.entryScriptFile()));
+
+			PyErr_PrintEx(0);
+		}
+
 		S_RELEASE(entryScriptFileName);
 
 		if(entryScript_.get() == NULL)
@@ -742,16 +734,16 @@ void ClientApp::onLoginBaseappFailed(Network::Channel * pChannel, SERVER_ERROR_C
 }
 
 //-------------------------------------------------------------------------------------	
-void ClientApp::onReLoginBaseappFailed(Network::Channel * pChannel, SERVER_ERROR_CODE failedcode)
+void ClientApp::onReloginBaseappFailed(Network::Channel * pChannel, SERVER_ERROR_CODE failedcode)
 {
-	ClientObjectBase::onReLoginBaseappFailed(pChannel, failedcode);
+	ClientObjectBase::onReloginBaseappFailed(pChannel, failedcode);
 	canReset_ = true;
 }
 
 //-------------------------------------------------------------------------------------	
-void ClientApp::onReLoginBaseappSuccessfully(Network::Channel * pChannel, MemoryStream& s)
+void ClientApp::onReloginBaseappSuccessfully(Network::Channel * pChannel, MemoryStream& s)
 {
-	ClientObjectBase::onReLoginBaseappSuccessfully(pChannel, s);
+	ClientObjectBase::onReloginBaseappSuccessfully(pChannel, s);
 }
 
 //-------------------------------------------------------------------------------------	
