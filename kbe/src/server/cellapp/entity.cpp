@@ -1139,7 +1139,21 @@ void Entity::backupCellData()
 		if(isDirty())
 		{
 			MemoryStream* s = MemoryStream::createPoolObject();
-			addCellDataToStream(BASEAPP_TYPE, ENTITY_CELL_DATA_FLAGS, s);
+
+			try
+			{
+				addCellDataToStream(BASEAPP_TYPE, ENTITY_CELL_DATA_FLAGS, s);
+			}
+			catch (MemoryStreamWriteOverflow & err)
+			{
+				ERROR_MSG(fmt::format("{}::backupCellData({}): {}\n",
+					scriptName(), id(), err.what()));
+
+				MemoryStream::reclaimPoolObject(s);
+				Network::Bundle::reclaimPoolObject(pBundle);
+				return;
+			}
+
 			(*pBundle).append(s);
 			MemoryStream::reclaimPoolObject(s);
 		}
@@ -1771,6 +1785,8 @@ int Entity::pySetPosition(PyObject *value)
 	script::ScriptVector3::convertPyObjectToVector3(pos, value);
 	position(pos);
 
+	isOnGround_ = true;
+
 	static ENTITY_PROPERTY_UID posuid = 0;
 	if(posuid == 0)
 	{
@@ -1940,6 +1956,8 @@ void Entity::onPyPositionChanged()
 {
 	if(this->isDestroyed())
 		return;
+
+	isOnGround_ = true;
 
 	static ENTITY_PROPERTY_UID posuid = 0;
 	if(posuid == 0)
@@ -3593,7 +3611,20 @@ void Entity::onTeleportRefEntityCall(EntityCall* nearbyMBRef, Position3D& pos, D
 	(*pBundle) << g_componentID;
 
 	MemoryStream* s = MemoryStream::createPoolObject();
-	changeToGhost(nearbyMBRef->componentID(), *s);
+
+	try
+	{ 
+		changeToGhost(nearbyMBRef->componentID(), *s);
+	}
+	catch (MemoryStreamWriteOverflow & err)
+	{
+		ERROR_MSG(fmt::format("{}::onTeleportRefEntityCall({}): {}\n",
+			scriptName(), id(), err.what()));
+
+		MemoryStream::reclaimPoolObject(s);
+		Network::Bundle::reclaimPoolObject(pBundle);
+		return;
+	}
 
 	(*pBundle).append(s);
 	MemoryStream::reclaimPoolObject(s);

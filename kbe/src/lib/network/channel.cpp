@@ -65,7 +65,7 @@ size_t Channel::getPoolObjectBytes()
 		+ sizeof(flags_) + sizeof(numPacketsSent_) + sizeof(numPacketsReceived_) + sizeof(numBytesSent_) + sizeof(numBytesReceived_)
 		+ sizeof(lastTickBytesReceived_) + sizeof(lastTickBytesSent_) + sizeof(pFilter_) + sizeof(pEndPoint_) + sizeof(pPacketReceiver_) + sizeof(pPacketSender_)
 		+ sizeof(proxyID_) + strextra_.size() + sizeof(channelType_)
-		+ sizeof(componentID_) + sizeof(pMsgHandlers_);
+		+ sizeof(componentID_) + sizeof(pMsgHandlers_) + condemnReason_.size() + sizeof(kcpUpdateTimerHandle_) + sizeof(pKCP_) + sizeof(hasSetNextKcpUpdate_);
 
 	return bytes;
 }
@@ -119,7 +119,10 @@ Channel::Channel(NetworkInterface & networkInterface,
 	componentID_(UNKNOWN_COMPONENT_TYPE),
 	pMsgHandlers_(NULL),
 	flags_(0),
-	pKCP_(NULL)
+	pKCP_(NULL),
+	kcpUpdateTimerHandle_(),
+	hasSetNextKcpUpdate_(false),
+	condemnReason_()
 {
 	this->clearBundle();
 	initialize(networkInterface, pEndPoint, traits, pt, spt, pFilter, id);
@@ -155,7 +158,10 @@ Channel::Channel():
 	componentID_(UNKNOWN_COMPONENT_TYPE),
 	pMsgHandlers_(NULL),
 	flags_(0),
-	pKCP_(NULL)
+	pKCP_(NULL),
+	kcpUpdateTimerHandle_(),
+	hasSetNextKcpUpdate_(false),
+	condemnReason_()
 {
 	this->clearBundle();
 }
@@ -374,7 +380,8 @@ bool Channel::init_kcp()
 		IKCP_LOG_IN_PROBE | IKCP_LOG_IN_WINS | IKCP_LOG_OUT_DATA | IKCP_LOG_OUT_ACK | IKCP_LOG_OUT_PROBE | IKCP_LOG_OUT_WINS);
 	*/
 
-	pNetworkInterface_->dispatcher().addTask(this);
+	hasSetNextKcpUpdate_ = false;
+	addKcpUpdate();
 	return true;
 }
 
@@ -384,10 +391,13 @@ bool Channel::fina_kcp()
 	if (!pKCP_)
 		return true;
 
-	pNetworkInterface_->dispatcher().cancelTask(this);
-
 	ikcp_release(pKCP_);
 	pKCP_ = NULL;
+
+	if (kcpUpdateTimerHandle_.isSet())
+		kcpUpdateTimerHandle_.cancel();
+
+	hasSetNextKcpUpdate_ = false;
 	return true;
 }
 
@@ -407,6 +417,53 @@ int Channel::kcp_output(const char *buf, int len, ikcpcb *kcp, void *user)
 		return -1;
 
 	return ((KCPPacketSender*)pChannel->pPacketSender())->kcp_output(buf, len, kcp, pChannel);
+}
+
+//-------------------------------------------------------------------------------------
+void Channel::addKcpUpdate(int64 microseconds)
+{
+	//AUTO_SCOPED_PROFILE("addKcpUpdate");
+
+	if (microseconds <= 1)
+	{
+		// 避免send等操作导致多次添加和取消timer
+		if (!hasSetNextKcpUpdate_)
+			hasSetNextKcpUpdate_ = true;
+		else
+			return;
+	}
+	else
+	{
+		hasSetNextKcpUpdate_ = false;
+	}
+
+	if (kcpUpdateTimerHandle_.isSet())
+	{
+		kcpUpdateTimerHandle_.cancel();
+	}
+
+	kcpUpdateTimerHandle_ = this->dispatcher().addTimer(microseconds, this, (void *)KCP_UPDATE);
+}
+
+//-------------------------------------------------------------------------------------
+void Channel::kcpUpdate()
+{
+	//AUTO_SCOPED_PROFILE("kcpUpdate");
+
+	uint32 current = kbe_clock();
+	ikcp_update(pKCP_, current);
+
+	uint32 nextUpdateKcpTime = ikcp_check(pKCP_, current) - current;
+
+	if (nextUpdateKcpTime > 0)
+	{
+		addKcpUpdate(nextUpdateKcpTime * 1000);
+	}
+	else
+	{
+		kcpUpdateTimerHandle_.cancel();
+		hasSetNextKcpUpdate_ = false;
+	}
 }
 
 //-------------------------------------------------------------------------------------
@@ -489,6 +546,7 @@ void Channel::clearState( bool warnOnDiscard /*=false*/ )
 	proxyID_ = 0;
 	strextra_ = "";
 	channelType_ = CHANNEL_NORMAL;
+	condemnReason_ = "";
 
 	if(pEndPoint_ && protocoltype_ == PROTOCOL_TCP && !this->isDestroyed())
 	{
@@ -595,6 +653,11 @@ void Channel::handleTimeout(TimerHandle, void * arg)
 			{
 				this->networkInterface().onChannelTimeOut(this);
 			}
+			break;
+		}
+		case KCP_UPDATE:
+		{
+			kcpUpdate();
 			break;
 		}
 		default:
@@ -759,7 +822,7 @@ void Channel::sendCheck(uint32 bundleSize)
 				ERROR_MSG(fmt::format("Channel::sendCheck[{:p}]: external channel({}), send-window bufferedMessages has overflowed({} > {}), Try adjusting the kbengine[_defs].xml->windowOverflow->send->messages.\n",
 					(void*)this, this->c_str(), bundleSize, Network::g_extSendWindowMessagesOverflow));
 
-				this->condemn();
+				this->condemn("Channel::sendCheck: send-window bufferedMessages has overflowed!");
 			}
 		}
 
@@ -771,7 +834,7 @@ void Channel::sendCheck(uint32 bundleSize)
 				ERROR_MSG(fmt::format("Channel::sendCheck[{:p}]: external channel({}), bufferedBytes has overflowed({} > {}), Try adjusting the kbengine[_defs].xml->windowOverflow->send->bytes.\n",
 					(void*)this, this->c_str(), bundleBytes, g_extSendWindowBytesOverflow));
 
-				this->condemn();
+				this->condemn("Channel::sendCheck: send-window bufferedBytes has overflowed!");
 			}
 		}
 	}
@@ -785,7 +848,7 @@ void Channel::sendCheck(uint32 bundleSize)
 				ERROR_MSG(fmt::format("Channel::sendCheck[{:p}]: internal channel({}), send-window bufferedMessages has overflowed({} > {}).\n",
 					(void*)this, this->c_str(), bundleSize, Network::g_intSendWindowMessagesOverflow));
 
-				this->condemn();
+				this->condemn("Channel::sendCheck: send-window bufferedMessages has overflowed!");
 			}
 			else
 			{
@@ -848,7 +911,7 @@ void Channel::onPacketSent(int bytes, bool sentCompleted)
 			ERROR_MSG(fmt::format("Channel::onPacketSent[{:p}]: external channel({}), sentBytes has overflowed({} > {}), Try adjusting the kbengine[_defs].xml->windowOverflow->send->tickSentBytes.\n", 
 				(void*)this, this->c_str(), lastTickBytesSent_, g_extSentWindowBytesOverflow));
 
-			this->condemn();
+			this->condemn("Channel::onPacketSent: sentBytes has overflowed!");
 		}
 	}
 	else
@@ -884,7 +947,7 @@ void Channel::onPacketReceived(int bytes)
 			ERROR_MSG(fmt::format("Channel::onPacketReceived[{:p}]: external channel({}), bufferedBytes has overflowed({} > {}), Try adjusting the kbengine[_defs].xml->windowOverflow->receive.\n", 
 				(void*)this, this->c_str(), lastTickBytesReceived_, g_extReceiveWindowBytesOverflow));
 
-			this->condemn();
+			this->condemn("Channel::onPacketReceived: bufferedBytes has overflowed!");
 		}
 	}
 	else
@@ -913,7 +976,7 @@ void Channel::addReceiveWindow(Packet* pPacket)
 				ERROR_MSG(fmt::format("Channel::addReceiveWindow[{:p}]: external channel({}), receive window has overflowed({} > {}), Try adjusting the kbengine[_defs].xml->windowOverflow->receive->messages->external.\n", 
 					(void*)this, this->c_str(), lastTickBufferedReceives_, Network::g_extReceiveWindowMessagesOverflow));
 
-				this->condemn();
+				this->condemn("Channel::addReceiveWindow: receive window has overflowed!");
 			}
 			else
 			{
@@ -941,11 +1004,12 @@ void Channel::addReceiveWindow(Packet* pPacket)
 }
 
 //-------------------------------------------------------------------------------------
-void Channel::condemn()
+void Channel::condemn(const std::string& reason)
 { 
 	if(isCondemn())
 		return;
 
+	condemnReason_ = reason;
 	flags_ |= FLAG_CONDEMN; 
 	//WARNING_MSG(fmt::format("Channel::condemn[{:p}]: channel({}).\n", (void*)this, this->c_str())); 
 }
@@ -1030,13 +1094,6 @@ bool Channel::handshake(Packet* pPacket)
 }
 
 //-------------------------------------------------------------------------------------
-bool Channel::process()
-{
-	ikcp_update(pKCP_, kbe_clock());
-	return true;
-}
-
-//-------------------------------------------------------------------------------------
 void Channel::updateTick(KBEngine::Network::MessageHandlers* pMsgHandlers)
 {
 	lastTickBytesReceived_ = 0;
@@ -1094,7 +1151,7 @@ void Channel::processPackets(KBEngine::Network::MessageHandlers* pMsgHandlers, P
 
 		pPacketReader_->currMsgID(0);
 		pPacketReader_->currMsgLen(0);
-		condemn();
+		condemn("Channel::processPackets: packet invalid!");
 	}
 
 	RECLAIM_PACKET(pPacket->isTCPPacket(), pPacket);
